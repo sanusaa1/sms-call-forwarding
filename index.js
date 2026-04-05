@@ -30,18 +30,21 @@ const ipHits = {};
 const alertedIPs = {};
 let allowedDomains = [];
 
-// ================== LOAD DOMAINS FROM FIREBASE ==================
+// ================== LOAD DOMAINS ==================
 async function loadDomains() {
-  const snap = await db.ref("domains").once("value");
-  const data = snap.val();
+  try {
+    const snap = await db.ref("domains").once("value");
+    const data = snap.val();
 
-  if (data) {
-    allowedDomains = Object.values(data);
-    console.log("✅ Domains Loaded:", allowedDomains.length);
+    if (data) {
+      allowedDomains = Object.values(data);
+      console.log("✅ Domains Loaded:", allowedDomains.length);
+    }
+  } catch (e) {
+    console.log("❌ Domain Load Error:", e.message);
   }
 }
 
-// 🔄 refresh domains every 60 sec
 setInterval(loadDomains, 60000);
 loadDomains();
 
@@ -60,10 +63,11 @@ async function sendFCM(ip, type) {
         await messaging.send({
           token,
           android: { priority: "high" },
-          data: { ip: ip, type: type }
+          data: { ip: String(ip), type: String(type) }
         });
       } catch (e) {
-        console.log("❌ Token Error:", key);
+        console.log("❌ Removing invalid token:", key);
+        await db.ref("tokens").child(key).remove(); // 🔥 AUTO CLEAN
       }
     }
 
@@ -75,11 +79,18 @@ async function sendFCM(ip, type) {
 // ================== MAIN MIDDLEWARE ==================
 app.use(async (req, res, next) => {
 
+  // ✅ BYPASS IMPORTANT ROUTES
+  if (req.path === "/send" || req.path === "/") {
+    return next();
+  }
+
   const ip =
     req.headers["x-forwarded-for"]?.split(",")[0] ||
     req.socket.remoteAddress;
 
   const host = req.headers.host || "";
+
+  if (!host) return next();
 
   ipHits[ip] = (ipHits[ip] || 0) + 1;
 
@@ -88,10 +99,10 @@ app.use(async (req, res, next) => {
   console.log("URL:", req.url);
   console.log("Hits:", ipHits[ip]);
 
-  // ================= DIRECT IP DETECTION =================
- const isValidDomain = allowedDomains.some(d => 
-  host === d || host.endsWith("." + d)
-);
+  // ================= DOMAIN CHECK =================
+  const isValidDomain = allowedDomains.some(d =>
+    host === d || host.endsWith("." + d)
+  );
 
   if (!isValidDomain) {
     console.log("🚨 DIRECT IP / UNKNOWN DOMAIN:", host);
@@ -108,7 +119,7 @@ app.use(async (req, res, next) => {
     return res.status(403).send("Forbidden");
   }
 
-  // ================= VISIT ALERT =================
+  // ================= FIRST VISIT =================
   if (!alertedIPs[ip]) {
     alertedIPs[ip] = true;
 
